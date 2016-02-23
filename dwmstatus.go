@@ -6,35 +6,98 @@ package main
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net"
+	"os"
 	"strings"
 	"time"
 )
 
-var dpy = C.XOpenDisplay(nil)
+type energyPaths struct {
+	now  string
+	full string
+}
+
+var (
+	dpy                = C.XOpenDisplay(nil)
+	currentEnergyPaths energyPaths
+	foundEnergyPaths   = false
+)
 
 func getVolumePerc() int {
 	return int(C.get_volume_perc())
 }
 
+func pathExist(path string) bool {
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+
+	return true
+}
+
+func checkEnergyPaths(path string) {
+	// pathList contains different file names the energy status
+	// can be located in
+	pathList := []energyPaths{
+		energyPaths{
+			now:  "BAT0/energy_now",
+			full: "BAT0/energy_full",
+		},
+		energyPaths{
+			now:  "BAT0/charge_now",
+			full: "BAT0/charge_full",
+		},
+		energyPaths{
+			now:  "BAT1/energy_now",
+			full: "BAT1/energy_full",
+		},
+		energyPaths{
+			now:  "BAT1/charge_now",
+			full: "BAT1/charge_full",
+		},
+	}
+
+	for _, paths := range pathList {
+		if pathExist(fmt.Sprintf("%s/%s", path, paths.now)) && pathExist(fmt.Sprintf("%s/%s", path, paths.full)) {
+			currentEnergyPaths = paths
+			foundEnergyPaths = true
+			return
+		}
+	}
+}
+
+func parseBatteryData(path string) (energy int) {
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		energy = -1
+		return
+	}
+
+	fmt.Sscanf(string(data), "%d", &energy)
+
+	return
+}
+
 func getBatteryPercentage(path string) (perc int, err error) {
-	energy_now, err := ioutil.ReadFile(fmt.Sprintf("%s/energy_now", path))
-	if err != nil {
+	// Check if the energy paths are already found, if so, skip checking them again
+	if foundEnergyPaths == false {
+		checkEnergyPaths(path)
+	}
+
+	energyNow := parseBatteryData(fmt.Sprintf("%s/%s", path, currentEnergyPaths.now))
+	energyFull := parseBatteryData(fmt.Sprintf("%s/%s", path, currentEnergyPaths.full))
+
+	if energyNow == -1 || energyFull == -1 {
 		perc = -1
+		err = errors.New("Unable to read battery data")
 		return
 	}
-	energy_full, err := ioutil.ReadFile(fmt.Sprintf("%s/energy_full", path))
-	if err != nil {
-		perc = -1
-		return
-	}
-	var enow, efull int
-	fmt.Sscanf(string(energy_now), "%d", &enow)
-	fmt.Sscanf(string(energy_full), "%d", &efull)
-	perc = enow * 100 / efull
+
+	perc = energyNow * 100 / energyFull
 	return
 }
 
@@ -93,10 +156,10 @@ func nowPlaying(addr string) (np string, err error) {
 		}
 		np = artist + " - " + title
 		return
-	} else { //This is a nonfatal error.
-		np = "Playlist is empty."
-		return
 	}
+	//This is a nonfatal error.
+	np = "Playlist is empty."
+	return
 }
 
 func formatStatus(format string, args ...interface{}) *C.char {
@@ -108,21 +171,28 @@ func main() {
 	if dpy == nil {
 		log.Fatal("Can't open display")
 	}
+
 	for {
 		t := time.Now().Format("Mon 02 15:04")
-		b, err := getBatteryPercentage("/sys/class/power_supply/BAT0")
+
+		b, err := getBatteryPercentage("/sys/class/power_supply")
 		if err != nil {
 			log.Println(err)
 		}
+
 		l, err := getLoadAverage("/proc/loadavg")
 		if err != nil {
 			log.Println(err)
 		}
+
 		m, err := nowPlaying("localhost:6600")
 		if err != nil {
 			log.Println(err)
 		}
+
 		vol := getVolumePerc()
+
+		// TODO Add flags to disable certain status parts (mpd, loadavg etc.)
 		s := formatStatus("%s :: %d%% :: %s :: %s :: %d%%", m, vol, l, t, b)
 		setStatus(s)
 		time.Sleep(time.Second)
