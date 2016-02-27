@@ -25,6 +25,7 @@ var (
 	dpy                = C.XOpenDisplay(nil)
 	currentEnergyPaths energyPaths
 	foundEnergyPaths   = false
+	batteryWarning     = false
 )
 
 func getVolumePerc() int {
@@ -82,7 +83,7 @@ func parseBatteryData(path string) (energy int) {
 	return
 }
 
-func getBatteryPercentage(path string) (perc int, err error) {
+func getBatteryStatus(path string) (status string, err error) {
 	// Check if the energy paths are already found, if so, skip checking them again
 	if foundEnergyPaths == false {
 		checkEnergyPaths(path)
@@ -92,12 +93,22 @@ func getBatteryPercentage(path string) (perc int, err error) {
 	energyFull := parseBatteryData(fmt.Sprintf("%s/%s", path, currentEnergyPaths.full))
 
 	if energyNow == -1 || energyFull == -1 {
-		perc = -1
-		err = errors.New("Unable to read battery data")
+		status = "Unable to read battery data"
+		err = errors.New(status)
 		return
 	}
 
-	perc = energyNow * 100 / energyFull
+	perc := energyNow * 100 / energyFull
+	var warning string
+
+	if perc < 15 && batteryWarning == false {
+		batteryWarning = true
+		warning = " [low]"
+	} else {
+		batteryWarning = false
+	}
+
+	status = fmt.Sprintf("%d%%%s", energyNow*100/energyFull, warning)
 	return
 }
 
@@ -175,7 +186,7 @@ func main() {
 	for {
 		t := time.Now().Format("Mon 02 15:04")
 
-		b, err := getBatteryPercentage("/sys/class/power_supply")
+		b, err := getBatteryStatus("/sys/class/power_supply")
 		if err != nil {
 			log.Println(err)
 		}
@@ -193,7 +204,7 @@ func main() {
 		vol := getVolumePerc()
 
 		// TODO Add flags to disable certain status parts (mpd, loadavg etc.)
-		s := formatStatus("%s :: %d%% :: %s :: %s :: %d%%", m, vol, l, t, b)
+		s := formatStatus("%s :: %d%% :: %s :: %s :: %s", m, vol, l, t, b)
 		setStatus(s)
 		time.Sleep(time.Second)
 	}
