@@ -7,11 +7,11 @@ import "C"
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net"
-	"os"
 	"strings"
 	"time"
 )
@@ -21,6 +21,28 @@ type energyPaths struct {
 	full string
 }
 
+type flags struct {
+	battery     bool
+	time        bool
+	loadavg     bool
+	mpd         bool
+	volume      bool
+	batteryNow  string
+	batteryFull string
+	timeFormat  string
+}
+
+var context = flags{
+	battery:     true,
+	time:        true,
+	loadavg:     true,
+	mpd:         true,
+	volume:      true,
+	batteryNow:  "/sys/class/power_supply/BAT0/energy_now",
+	batteryFull: "/sys/class/power_supply/BAT0/energy_full",
+	timeFormat:  "Mon 02 15:04",
+}
+
 var (
 	dpy                = C.XOpenDisplay(nil)
 	currentEnergyPaths energyPaths
@@ -28,47 +50,8 @@ var (
 	batteryWarning     = false
 )
 
-func getVolumePerc() int {
-	return int(C.get_volume_perc())
-}
-
-func pathExist(path string) bool {
-	if _, err := os.Stat(path); err != nil {
-		return false
-	}
-
-	return true
-}
-
-func checkEnergyPaths(path string) {
-	// pathList contains different file names the energy status
-	// can be located in
-	pathList := []energyPaths{
-		energyPaths{
-			now:  "BAT0/energy_now",
-			full: "BAT0/energy_full",
-		},
-		energyPaths{
-			now:  "BAT0/charge_now",
-			full: "BAT0/charge_full",
-		},
-		energyPaths{
-			now:  "BAT1/energy_now",
-			full: "BAT1/energy_full",
-		},
-		energyPaths{
-			now:  "BAT1/charge_now",
-			full: "BAT1/charge_full",
-		},
-	}
-
-	for _, paths := range pathList {
-		if pathExist(fmt.Sprintf("%s/%s", path, paths.now)) && pathExist(fmt.Sprintf("%s/%s", path, paths.full)) {
-			currentEnergyPaths = paths
-			foundEnergyPaths = true
-			return
-		}
-	}
+func getVolumePerc() string {
+	return fmt.Sprintf("%d%%", int(C.get_volume_perc()))
 }
 
 func parseBatteryData(path string) (energy int) {
@@ -83,14 +66,9 @@ func parseBatteryData(path string) (energy int) {
 	return
 }
 
-func getBatteryStatus(path string) (status string, err error) {
-	// Check if the energy paths are already found, if so, skip checking them again
-	if foundEnergyPaths == false {
-		checkEnergyPaths(path)
-	}
-
-	energyNow := parseBatteryData(fmt.Sprintf("%s/%s", path, currentEnergyPaths.now))
-	energyFull := parseBatteryData(fmt.Sprintf("%s/%s", path, currentEnergyPaths.full))
+func getBatteryStatus(pathNow string, pathFull string) (status string, err error) {
+	energyNow := parseBatteryData(pathNow)
+	energyFull := parseBatteryData(pathFull)
 
 	if energyNow == -1 || energyFull == -1 {
 		status = "Unable to read battery data"
@@ -173,9 +151,18 @@ func nowPlaying(addr string) (np string, err error) {
 	return
 }
 
-func formatStatus(format string, args ...interface{}) *C.char {
-	status := fmt.Sprintf(format, args...)
-	return C.CString(status)
+func init() {
+	flag.StringVar(&context.batteryNow, "battery-now", context.batteryNow, "path to current energy file")
+	flag.StringVar(&context.batteryFull, "battery-full", context.batteryFull, "path to full energy file")
+	flag.StringVar(&context.timeFormat, "time-format", context.timeFormat, "time format")
+
+	flag.BoolVar(&context.battery, "battery", context.battery, "show battery indicator")
+	flag.BoolVar(&context.time, "time", context.time, "show time indictator")
+	flag.BoolVar(&context.loadavg, "loadavg", context.loadavg, "show load average")
+	flag.BoolVar(&context.mpd, "mpd", context.mpd, "show mpd status")
+	flag.BoolVar(&context.volume, "volume", context.volume, "show current volume")
+
+	flag.Parse()
 }
 
 func main() {
@@ -183,29 +170,59 @@ func main() {
 		log.Fatal("Can't open display")
 	}
 
+	var indicators [5]string
+	var err error
+
 	for {
-		t := time.Now().Format("Mon 02 15:04")
+		index := 0
 
-		b, err := getBatteryStatus("/sys/class/power_supply")
-		if err != nil {
-			log.Println(err)
+		if context.mpd {
+			indicators[index], err = nowPlaying("localhost:6600")
+			index++
+
+			if err != nil {
+				log.Println(err)
+			}
 		}
 
-		l, err := getLoadAverage("/proc/loadavg")
-		if err != nil {
-			log.Println(err)
+		if context.volume {
+			indicators[index] = getVolumePerc()
 		}
 
-		m, err := nowPlaying("localhost:6600")
-		if err != nil {
-			log.Println(err)
+		if context.loadavg {
+			indicators[index], err = getLoadAverage("/proc/loadavg")
+			index++
+
+			if err != nil {
+				log.Println(err)
+			}
 		}
 
-		vol := getVolumePerc()
+		if context.time {
+			indicators[index] = time.Now().Format(context.timeFormat)
+			index++
+		}
 
-		// TODO Add flags to disable certain status parts (mpd, loadavg etc.)
-		s := formatStatus("%s :: %d%% :: %s :: %s :: %s", m, vol, l, t, b)
-		setStatus(s)
+		if context.battery {
+			indicators[index], err = getBatteryStatus(context.batteryNow, context.batteryFull)
+			index++
+
+			if err != nil {
+				log.Println(err)
+			}
+		}
+
+		var status string
+		for i := 0; i < index; i++ {
+			status += indicators[i]
+
+			if i < index-1 {
+				status += " :: "
+			}
+		}
+
+		setStatus(C.CString(status))
+
 		time.Sleep(time.Second)
 	}
 }
