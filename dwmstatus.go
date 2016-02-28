@@ -187,6 +187,7 @@ func main() {
 
 		if context.volume {
 			indicators[index] = getVolumePerc()
+			index++
 		}
 
 		if context.loadavg {
