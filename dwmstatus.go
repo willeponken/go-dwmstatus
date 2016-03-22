@@ -128,6 +128,9 @@ func nowPlaying(addr string) (np string, err error) {
 	message = "currentsong\n"
 	conn.Write([]byte(message))
 	conn.Read(reply)
+
+	var artist, title string
+
 	r = string(reply)
 	arr = strings.Split(string(r), "\n")
 	if len(arr) > 5 {
@@ -135,19 +138,29 @@ func nowPlaying(addr string) (np string, err error) {
 			field := strings.SplitN(info, ":", 2)
 			switch field[0] {
 			case "Artist":
-				np = strings.TrimSpace(field[1])
+				artist = strings.TrimSpace(field[1])
 			case "Title":
-				np += " - " + strings.TrimSpace(field[1])
+				title = strings.TrimSpace(field[1])
 			case "Name":
-				if np == "" {
+				if artist == "" || title == "" {
 					np = strings.TrimSpace(field[1]) // no artist nor title, set name of stream.
 				}
-			default:
-				//do nothing with the field
 			}
 		}
+
+		if np == "" {
+			if artist != "" && title != "" {
+				np = artist + " - " + title
+			} else if title != "" {
+				np = title
+			} else {
+				np = artist
+			}
+		}
+
 		return
 	}
+
 	//This is a nonfatal error.
 	np = "Playlist is empty."
 	return
